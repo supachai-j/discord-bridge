@@ -1,0 +1,7 @@
+venv/
+session_id.txt
+__pycache__/
+.env
+instances/*.env
+instances/*.session_id.txt
+!instances/instances.example.env
