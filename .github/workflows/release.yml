@@ -1,0 +1,20 @@
+name: Release
+
+# Feature releases are just tags — this workflow only packages a GitHub
+# Release with auto-generated notes from the commits/PRs since the last tag.
+# It does not deploy anywhere: this project has no CD, see README#releasing.
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: gh release create "${{ github.ref_name }}" --generate-notes
+        env:
+          GH_TOKEN: ${{ github.token }}

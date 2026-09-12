@@ -9,6 +9,9 @@ import threading
 
 import discord
 
+__version__ = "0.1.0"
+
+
 def _env_int_set(name, required=True):
     raw = os.environ.get(name, "").strip()
     if not raw:
@@ -36,30 +39,39 @@ def _env_int(name, minimum=None, default=None):
     return value
 
 
-# All deployment-specific values come from the environment (see .env.example)
-# rather than being hardcoded, so this file has nothing to sanitize before
-# it's shared — every installer edits .env, never bridge.py.
-TOKEN_FILE = os.path.expanduser(os.environ.get("DISCORD_BOT_TOKEN_FILE", "~/.discord_bot_token"))
-CHANNEL_ID = _env_int("DISCORD_CHANNEL_ID")
-ALLOWED_USER_IDS = _env_int_set("DISCORD_ALLOWED_USER_IDS")
-CLAUDE_BIN = os.environ.get("CLAUDE_BIN", "claude")
-CLAUDE_CONFIG_DIR = os.environ.get("CLAUDE_CONFIG_DIR")  # optional — unset means claude's own default
-# Recommended: point this somewhere other than $HOME. It's defense-in-depth
-# on top of whatever permissions.deny rules you put in claude's settings.json
-# (those block Read() on secrets regardless of cwd) — keeping the
-# subprocess's cwd off $HOME just means relative-path tool calls don't land
-# in it either.
-WORKDIR = os.path.expanduser(os.environ.get("BRIDGE_WORKDIR", "~"))
-SESSION_FILE = os.path.expanduser(os.environ.get("BRIDGE_SESSION_FILE", "~/discord-bridge/session_id.txt"))
+# Constants with no per-deployment meaning — unlike everything _load_config()
+# reads, these are always the same regardless of environment.
 DISCORD_CHUNK = 1900
 EDIT_INTERVAL = 1.5
-TIMEOUT_SECONDS = _env_int("BRIDGE_TIMEOUT_SECONDS", minimum=30, default=20 * 60)
 
 # Subprocesses currently in flight, so a SIGTERM/SIGINT (systemctl stop /
 # restart) can kill them instead of orphaning them — discord.py's client.run()
 # only ever catches KeyboardInterrupt around the event loop, never forwards
 # it to whatever `claude` subprocess happens to be running at the time.
 _active_procs = set()
+
+
+def _load_config():
+    # Deferred into a function — called from main(), not at import time — so
+    # this module can be imported (e.g. by tests) without a live .env in
+    # place. See .env.example for what each of these does; nothing
+    # deployment-specific is hardcoded, so this file has nothing to sanitize
+    # before it's shared — every installer edits .env, never bridge.py.
+    global TOKEN_FILE, CHANNEL_ID, ALLOWED_USER_IDS, CLAUDE_BIN
+    global CLAUDE_CONFIG_DIR, WORKDIR, SESSION_FILE, TIMEOUT_SECONDS
+    TOKEN_FILE = os.path.expanduser(os.environ.get("DISCORD_BOT_TOKEN_FILE", "~/.discord_bot_token"))
+    CHANNEL_ID = _env_int("DISCORD_CHANNEL_ID")
+    ALLOWED_USER_IDS = _env_int_set("DISCORD_ALLOWED_USER_IDS")
+    CLAUDE_BIN = os.environ.get("CLAUDE_BIN", "claude")
+    CLAUDE_CONFIG_DIR = os.environ.get("CLAUDE_CONFIG_DIR")  # optional — unset means claude's own default
+    # Recommended: point this somewhere other than $HOME. It's defense-in-depth
+    # on top of whatever permissions.deny rules you put in claude's settings.json
+    # (those block Read() on secrets regardless of cwd) — keeping the
+    # subprocess's cwd off $HOME just means relative-path tool calls don't land
+    # in it either.
+    WORKDIR = os.path.expanduser(os.environ.get("BRIDGE_WORKDIR", "~"))
+    SESSION_FILE = os.path.expanduser(os.environ.get("BRIDGE_SESSION_FILE", "~/discord-bridge/session_id.txt"))
+    TIMEOUT_SECONDS = _env_int("BRIDGE_TIMEOUT_SECONDS", minimum=30, default=20 * 60)
 
 
 def _shutdown(signum, frame):
@@ -83,10 +95,6 @@ def _shutdown(signum, frame):
     sys.exit(0)
 
 
-signal.signal(signal.SIGTERM, _shutdown)
-signal.signal(signal.SIGINT, _shutdown)
-
-
 def read_token():
     with open(TOKEN_FILE) as f:
         return f.read().strip()
@@ -103,6 +111,30 @@ def load_session_id():
 def save_session_id(sid):
     with open(SESSION_FILE, "w") as f:
         f.write(sid)
+
+
+# {0,100}? keeps this from matching across large unrelated stretches of
+# stderr just because "session" appears early and "not found" appears
+# somewhere much later in the buffer. re.S: claude's stderr can wrap the
+# phrase across lines.
+_STALE_SESSION_RE = re.compile(
+    r"no conversation found|session.{0,100}?not found|invalid session|no such session",
+    re.I | re.S,
+)
+
+
+def is_stale_session_error(err_text):
+    """True if err_text looks like claude rejected --resume because the
+    session id no longer exists, rather than some other kind of failure."""
+    return bool(_STALE_SESSION_RE.search(err_text))
+
+
+def chunk_text(text, size=DISCORD_CHUNK):
+    """Split text into size-character pieces for Discord's message-length
+    limit. Every call site here guarantees text is non-empty, so the normal
+    contract is "at least one chunk" — chunk_text("") is the one exception,
+    returning [] rather than pretending a fake chunk exists."""
+    return [text[i:i + size] for i in range(0, len(text), size)]
 
 
 class StreamRun:
@@ -281,13 +313,7 @@ async def on_message(message: discord.Message):
             # session_id.txt can go stale (session deleted/corrupted) and then
             # every message fails the same way forever until someone deletes
             # it by hand. Self-heal: drop it so the next message starts fresh.
-            if session_id and re.search(
-                # {0,100}? keeps this from matching across large unrelated
-                # stretches of stderr just because "session" appears early
-                # and "not found" appears somewhere much later in the buffer.
-                r"no conversation found|session.{0,100}?not found|invalid session|no such session",
-                err_text, re.I | re.S,  # re.S: claude's stderr can wrap the phrase across lines
-            ):
+            if session_id and is_stale_session_error(err_text):
                 if os.path.exists(SESSION_FILE):
                     os.remove(SESSION_FILE)
                 err_text += "\n\n(session id เดิมเสียหรือหาไม่เจอ — ล้างให้แล้ว ลองพิมพ์คำสั่งใหม่อีกครั้ง)"
@@ -296,7 +322,7 @@ async def on_message(message: discord.Message):
         # text is never empty here: both branches above end in an
         # `... or "some fallback string"` chain, so this always yields at
         # least one chunk.
-        chunks = [text[i:i + DISCORD_CHUNK] for i in range(0, len(text), DISCORD_CHUNK)]
+        chunks = chunk_text(text)
         try:
             await thinking.edit(content=chunks[0])
         except discord.HTTPException:
@@ -305,4 +331,12 @@ async def on_message(message: discord.Message):
             await message.channel.send(chunk)
 
 
-client.run(read_token())
+def main():
+    _load_config()
+    signal.signal(signal.SIGTERM, _shutdown)
+    signal.signal(signal.SIGINT, _shutdown)
+    client.run(read_token())
+
+
+if __name__ == "__main__":
+    main()

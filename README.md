@@ -1,5 +1,7 @@
 # discord-bridge
 
+[![CI](https://github.com/supachai-j/discord-bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/supachai-j/discord-bridge/actions/workflows/ci.yml)
+
 A small Discord bot that pipes one channel into a resident [Claude Code](https://claude.com/claude-code) session. Every message from an allowed user spawns `claude -p --resume <session-id>`, streams the reply back into Discord by editing a placeholder message, and exits — no long-running Claude process, just a session id persisted between messages.
 
 ```
@@ -151,7 +153,35 @@ Leaving `CLAUDE_CONFIG_DIR` unset means the bot runs under the *same* `permissio
 - One conversation for the whole channel — `BRIDGE_SESSION_FILE` holds a single session id, not one per Discord user.
 - One channel per bot process — see [Running multiple agents](#running-multiple-agents) for running several side by side.
 - Messages are not queued — a second message while one is still running gets a "busy" reply, not a wait-in-line.
-- No test suite yet; changes are verified by restarting the service and sending a real message.
+- Tests (`tests/`) cover the pure logic — config parsing, stale-session detection, chunking — not the Discord/`claude` integration itself; that's still verified by restarting the service and sending a real message.
+
+## Development
+
+```bash
+pip install -r requirements-dev.txt
+ruff check .
+pytest -q
+```
+
+CI (`.github/workflows/ci.yml`) runs both on every push and pull request to `main`.
+
+## Releasing
+
+Tag a commit with semver and push the tag:
+
+```bash
+git tag v0.2.0
+git push --tags
+```
+
+`.github/workflows/release.yml` turns that into a GitHub Release with auto-generated notes from the commits since the last tag. That's the entire release process — **there is no CD**. Getting a release onto a running instance is a manual, deliberate step:
+
+```bash
+git pull
+sudo systemctl restart discord-bridge@<name>.service   # or discord-bridge.service
+```
+
+This is intentional for a bot with real permissions to a live `claude` session: a bad deploy should require a human to have typed `git pull`, not land automatically because CI turned green.
 
 ## License
 

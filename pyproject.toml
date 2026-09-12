@@ -1,0 +1,14 @@
+[tool.ruff]
+target-version = "py310"
+line-length = 120
+
+[tool.ruff.lint]
+# Focused on real bugs (pyflakes) and consistency (pycodestyle, import
+# sorting) — not opinionated rule sets like flake8-bandit or
+# flake8-blind-except. The `except Exception: pass` blocks in bridge.py are
+# deliberate best-effort guards inside background threads (documented
+# inline), not oversights.
+select = ["E", "F", "I", "W"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
