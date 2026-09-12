@@ -68,6 +68,18 @@ def _shutdown(signum, frame):
             proc.kill()
         except ProcessLookupError:
             pass
+    # Prefer letting the gateway connection close gracefully: schedule
+    # client.close() on the running loop so client.run()'s own `async with
+    # self:` block unwinds normally and asyncio.run() returns on its own.
+    # Fall back to a hard exit if the loop isn't reachable for some reason
+    # (e.g. a signal arriving before the loop has started).
+    try:
+        loop = client.loop
+        if loop and loop.is_running():
+            loop.call_soon_threadsafe(loop.create_task, client.close())
+            return
+    except Exception:
+        pass
     sys.exit(0)
 
 
@@ -82,7 +94,8 @@ def read_token():
 
 def load_session_id():
     if os.path.exists(SESSION_FILE):
-        sid = open(SESSION_FILE).read().strip()
+        with open(SESSION_FILE) as f:
+            sid = f.read().strip()
         return sid or None
     return None
 
@@ -120,13 +133,13 @@ class StreamRun:
         self.timed_out = True
         # self.proc is set by _run() right after Popen(); on a very short
         # TIMEOUT_SECONDS the watchdog can otherwise wake up before that
-        # assignment happens and skip the kill entirely. Give it a moment.
-        for _ in range(50):  # up to ~5s
-            if self.proc is not None:
-                break
+        # assignment happens. Wait for either — not capped, since one of the
+        # two is always guaranteed to happen: _run() either reaches Popen()
+        # or hits an exception first and sets `done` itself.
+        while self.proc is None:
             if self.done.wait(timeout=0.1):
                 return
-        if self.proc and self.proc.poll() is None:
+        if self.proc.poll() is None:
             self.proc.kill()
 
     def _drain_stderr(self, pipe):
@@ -218,14 +231,20 @@ async def on_message(message: discord.Message):
         await message.add_reaction("🚫")
         return
 
-    if message.content.strip().lower() in ("!reset", "!new"):
+    is_reset = message.content.strip().lower() in ("!reset", "!new")
+
+    if busy_lock.locked():
+        # Also gates !reset: if it ran while a StreamRun was still in flight,
+        # that run's eventual save_session_id() would silently recreate
+        # SESSION_FILE with the old id, undoing the reset the user just asked
+        # for. Treat !reset like any other message w.r.t. the lock.
+        await message.reply("busy — คำสั่งก่อนหน้ายังไม่เสร็จ รอสักครู่นะครับ", mention_author=False)
+        return
+
+    if is_reset:
         if os.path.exists(SESSION_FILE):
             os.remove(SESSION_FILE)
         await message.reply("🔄 ล้าง session แล้ว ข้อความถัดไปจะเริ่มบทสนทนาใหม่", mention_author=False)
-        return
-
-    if busy_lock.locked():
-        await message.reply("busy — คำสั่งก่อนหน้ายังไม่เสร็จ รอสักครู่นะครับ", mention_author=False)
         return
 
     async with busy_lock:
@@ -235,16 +254,23 @@ async def on_message(message: discord.Message):
         run.start()
 
         last_shown = None
+        edit_failures = 0
         while not run.done.is_set():
-            await asyncio.sleep(EDIT_INTERVAL)
+            # Back off the edit cadence on repeated failures (e.g. Discord's
+            # per-message edit rate limit under a long, fast-streaming run)
+            # instead of retrying at a fixed 1.5s regardless — and log it,
+            # instead of the previous silent `except: pass`.
+            await asyncio.sleep(EDIT_INTERVAL * min(2 ** edit_failures, 8))
             preview = run.text[-DISCORD_CHUNK:] if run.text else "(รอ output...)"
             body = f"⏳ กำลังทำงาน...\n{preview}"
             if body != last_shown:
                 try:
                     await thinking.edit(content=body)
                     last_shown = body
-                except discord.HTTPException:
-                    pass
+                    edit_failures = 0
+                except discord.HTTPException as e:
+                    edit_failures = min(edit_failures + 1, 3)
+                    print(f"[discord-bridge] preview edit failed, backing off: {e}", file=sys.stderr)
 
         if run.final and not run.final.get("is_error"):
             if run.final.get("session_id"):
@@ -256,7 +282,10 @@ async def on_message(message: discord.Message):
             # every message fails the same way forever until someone deletes
             # it by hand. Self-heal: drop it so the next message starts fresh.
             if session_id and re.search(
-                r"no conversation found|session.*not found|invalid session|no such session",
+                # {0,100}? keeps this from matching across large unrelated
+                # stretches of stderr just because "session" appears early
+                # and "not found" appears somewhere much later in the buffer.
+                r"no conversation found|session.{0,100}?not found|invalid session|no such session",
                 err_text, re.I | re.S,  # re.S: claude's stderr can wrap the phrase across lines
             ):
                 if os.path.exists(SESSION_FILE):
@@ -264,7 +293,10 @@ async def on_message(message: discord.Message):
                 err_text += "\n\n(session id เดิมเสียหรือหาไม่เจอ — ล้างให้แล้ว ลองพิมพ์คำสั่งใหม่อีกครั้ง)"
             text = "⚠️ " + err_text
 
-        chunks = [text[i:i + DISCORD_CHUNK] for i in range(0, len(text), DISCORD_CHUNK)] or ["(no output)"]
+        # text is never empty here: both branches above end in an
+        # `... or "some fallback string"` chain, so this always yields at
+        # least one chunk.
+        chunks = [text[i:i + DISCORD_CHUNK] for i in range(0, len(text), DISCORD_CHUNK)]
         try:
             await thinking.edit(content=chunks[0])
         except discord.HTTPException:
