@@ -4,6 +4,8 @@
 
 A small Discord bot that pipes one channel into a resident [Claude Code](https://claude.com/claude-code) session. Every message from an allowed user spawns `claude -p --resume <session-id>`, streams the reply back into Discord by editing a placeholder message, and exits — no long-running Claude process, just a session id persisted between messages.
 
+📖 Full docs site: **[supachai-j.github.io/discord-bridge](https://supachai-j.github.io/discord-bridge/)** · day-to-day operations: [docs/runbook.md](docs/runbook.md) · reporting a vulnerability: [SECURITY.md](SECURITY.md)
+
 ```
 Discord channel --message--> bridge.py --spawn `claude -p --resume`--> claude subprocess
       ^                          |  (author must be in the allowlist)         |
