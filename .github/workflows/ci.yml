@@ -17,3 +17,17 @@ jobs:
       - run: pip install -r requirements-dev.txt
       - run: ruff check .
       - run: pytest -q
+
+  security:
+    # Separate job from `test`: ruff's own rule selection (pyproject.toml)
+    # deliberately excludes bandit-style rules since bridge.py's few
+    # except-pass blocks are reviewed and accepted (see the # nosec comments
+    # inline) — this job runs bandit for real instead of just trusting that.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install bandit
+      - run: bandit -r bridge.py

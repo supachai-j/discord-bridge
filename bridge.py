@@ -1,15 +1,24 @@
 import asyncio
 import json
+import logging
 import os
 import re
 import signal
-import subprocess
+
+# subprocess: the whole point of this file is to run `claude`.
+import subprocess  # nosec B404
 import sys
 import threading
 
 import discord
 
 __version__ = "0.1.0"
+
+# discord.py already configures logging (that's where the "discord.gateway:
+# connected" lines in the systemd journal come from) — use the same module
+# so our own messages share its timestamp/level formatting instead of a
+# separate, inconsistent print() stream.
+logger = logging.getLogger("bridge")
 
 
 def _env_int_set(name, required=True):
@@ -58,7 +67,8 @@ def _load_config():
     # deployment-specific is hardcoded, so this file has nothing to sanitize
     # before it's shared — every installer edits .env, never bridge.py.
     global TOKEN_FILE, CHANNEL_ID, ALLOWED_USER_IDS, CLAUDE_BIN
-    global CLAUDE_CONFIG_DIR, WORKDIR, SESSION_FILE, TIMEOUT_SECONDS
+    global CLAUDE_CONFIG_DIR, WORKDIR, SESSION_FILE, TIMEOUT_SECONDS, LOG_LEVEL
+    LOG_LEVEL = getattr(logging, os.environ.get("BRIDGE_LOG_LEVEL", "INFO").upper(), logging.INFO)
     TOKEN_FILE = os.path.expanduser(os.environ.get("DISCORD_BOT_TOKEN_FILE", "~/.discord_bot_token"))
     CHANNEL_ID = _env_int("DISCORD_CHANNEL_ID")
     ALLOWED_USER_IDS = _env_int_set("DISCORD_ALLOWED_USER_IDS")
@@ -90,7 +100,9 @@ def _shutdown(signum, frame):
         if loop and loop.is_running():
             loop.call_soon_threadsafe(loop.create_task, client.close())
             return
-    except Exception:
+    # Best-effort graceful path in a signal handler; sys.exit(0) right below
+    # is the real fallback either way.
+    except Exception:  # nosec B110
         pass
     sys.exit(0)
 
@@ -163,6 +175,7 @@ class StreamRun:
         if self.done.wait(timeout=TIMEOUT_SECONDS):
             return
         self.timed_out = True
+        logger.warning("claude subprocess exceeded BRIDGE_TIMEOUT_SECONDS=%s, killing it", TIMEOUT_SECONDS)
         # self.proc is set by _run() right after Popen(); on a very short
         # TIMEOUT_SECONDS the watchdog can otherwise wake up before that
         # assignment happens. Wait for either — not capped, since one of the
@@ -181,7 +194,9 @@ class StreamRun:
         try:
             for line in pipe:
                 self.stderr_tail = (self.stderr_tail + line)[-1500:]
-        except Exception:
+        # Background drain thread must never crash the run over a logging
+        # concern.
+        except Exception:  # nosec B110
             pass
 
     def _run(self):
@@ -197,7 +212,9 @@ class StreamRun:
         if self.session_id:
             cmd += ["--resume", self.session_id]
         try:
-            self.proc = subprocess.Popen(
+            # cmd is a list and shell=False (default), so self.prompt (the
+            # Discord message) can't inject shell metacharacters here.
+            self.proc = subprocess.Popen(  # nosec B603
                 cmd, cwd=WORKDIR, env=env, bufsize=1,
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
             )
@@ -249,7 +266,7 @@ busy_lock = asyncio.Lock()
 
 @client.event
 async def on_ready():
-    print(f"Logged in as {client.user} (id={client.user.id}) — watching channel {CHANNEL_ID}")
+    logger.info("logged in as %s (id=%s) — watching channel %s", client.user, client.user.id, CHANNEL_ID)
 
 
 @client.event
@@ -276,6 +293,7 @@ async def on_message(message: discord.Message):
     if is_reset:
         if os.path.exists(SESSION_FILE):
             os.remove(SESSION_FILE)
+        logger.info("session reset requested by user %s", message.author.id)
         await message.reply("🔄 ล้าง session แล้ว ข้อความถัดไปจะเริ่มบทสนทนาใหม่", mention_author=False)
         return
 
@@ -302,7 +320,7 @@ async def on_message(message: discord.Message):
                     edit_failures = 0
                 except discord.HTTPException as e:
                     edit_failures = min(edit_failures + 1, 3)
-                    print(f"[discord-bridge] preview edit failed, backing off: {e}", file=sys.stderr)
+                    logger.warning("preview edit failed, backing off: %s", e)
 
         if run.final and not run.final.get("is_error"):
             if run.final.get("session_id"):
@@ -316,6 +334,7 @@ async def on_message(message: discord.Message):
             if session_id and is_stale_session_error(err_text):
                 if os.path.exists(SESSION_FILE):
                     os.remove(SESSION_FILE)
+                logger.warning("stale session %s detected and cleared: %s", session_id, err_text)
                 err_text += "\n\n(session id เดิมเสียหรือหาไม่เจอ — ล้างให้แล้ว ลองพิมพ์คำสั่งใหม่อีกครั้ง)"
             text = "⚠️ " + err_text
 
@@ -335,7 +354,13 @@ def main():
     _load_config()
     signal.signal(signal.SIGTERM, _shutdown)
     signal.signal(signal.SIGINT, _shutdown)
-    client.run(read_token())
+    # root_logger=True: discord.py's default only attaches its handler to
+    # the "discord.*" logger namespace, so our own "bridge" logger would
+    # otherwise have no handler and silently fall back to Python's WARNING-
+    # only lastResort handler — INFO logs would vanish, not just print
+    # differently.
+    logging.getLogger("bridge").setLevel(LOG_LEVEL)
+    client.run(read_token(), log_level=LOG_LEVEL, root_logger=True)
 
 
 if __name__ == "__main__":
