@@ -1,6 +1,8 @@
 venv/
 session_id.txt
 __pycache__/
+.pytest_cache/
+.ruff_cache/
 .env
 instances/*.env
 instances/*.session_id.txt
