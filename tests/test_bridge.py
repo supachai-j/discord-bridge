@@ -144,3 +144,147 @@ def test_load_session_id_empty_file_is_none(tmp_path, monkeypatch):
     session_file.write_text("")
     monkeypatch.setattr(bridge, "SESSION_FILE", str(session_file), raising=False)
     assert bridge.load_session_id() is None
+
+
+# ---------------------------------------------------------------------------
+# Backend selection (make_run) — BACKEND is normally set by _load_config(),
+# but tests set the module attribute directly to isolate the factory logic
+# from environment parsing.
+# ---------------------------------------------------------------------------
+
+def test_make_run_selects_claude_backend(monkeypatch):
+    monkeypatch.setattr(bridge, "BACKEND", "claude", raising=False)
+    assert isinstance(bridge.make_run("hi", None), bridge.ClaudeRun)
+
+
+def test_make_run_selects_cli_backend(monkeypatch):
+    monkeypatch.setattr(bridge, "BACKEND", "cli", raising=False)
+    assert isinstance(bridge.make_run("hi", None), bridge.CLIRun)
+
+
+def test_make_run_selects_openai_compatible_backend(monkeypatch):
+    monkeypatch.setattr(bridge, "BACKEND", "openai_compatible", raising=False)
+    assert isinstance(bridge.make_run("hi", None), bridge.OpenAICompatibleRun)
+
+
+def test_load_config_rejects_unknown_backend(monkeypatch):
+    monkeypatch.setenv("BACKEND", "not-a-real-backend")
+    monkeypatch.setenv("DISCORD_CHANNEL_ID", "1")
+    monkeypatch.setenv("DISCORD_ALLOWED_USER_IDS", "1")
+    with pytest.raises(SystemExit, match="must be claude, cli, or openai_compatible"):
+        bridge._load_config()
+
+
+# ---------------------------------------------------------------------------
+# CLIRun — argv templating and finalize logic for the generic agentic-CLI
+# adapter (codex, Gemini CLI, or similar). Plaintext-only by design; see the
+# class docstring and docs/decisions/0005-pluggable-backends.md.
+# ---------------------------------------------------------------------------
+
+def test_cli_run_build_argv_new(monkeypatch):
+    monkeypatch.setattr(bridge, "CLI_BIN", "codex", raising=False)
+    monkeypatch.setattr(bridge, "CLI_ARGS_NEW", "exec {prompt}", raising=False)
+    monkeypatch.setattr(bridge, "CLI_ARGS_RESUME", None, raising=False)
+    run = bridge.CLIRun("fix the bug", None)
+    assert run._build_argv() == ["codex", "exec", "fix the bug"]
+
+
+def test_cli_run_build_argv_resume_used_when_state_present(monkeypatch):
+    monkeypatch.setattr(bridge, "CLI_BIN", "codex", raising=False)
+    monkeypatch.setattr(bridge, "CLI_ARGS_NEW", "exec {prompt}", raising=False)
+    monkeypatch.setattr(bridge, "CLI_ARGS_RESUME", "exec resume --last {prompt}", raising=False)
+    run = bridge.CLIRun("continue", "1")
+    assert run._build_argv() == ["codex", "exec", "resume", "--last", "continue"]
+
+
+def test_cli_run_build_argv_falls_back_to_new_without_prior_state(monkeypatch):
+    monkeypatch.setattr(bridge, "CLI_BIN", "codex", raising=False)
+    monkeypatch.setattr(bridge, "CLI_ARGS_NEW", "exec {prompt}", raising=False)
+    monkeypatch.setattr(bridge, "CLI_ARGS_RESUME", "exec resume --last {prompt}", raising=False)
+    run = bridge.CLIRun("first message", None)
+    assert run._build_argv() == ["codex", "exec", "first message"]
+
+
+def test_cli_run_finalize_sets_truthy_state_when_resume_configured(monkeypatch):
+    monkeypatch.setattr(bridge, "CLI_ARGS_RESUME", "exec resume --last {prompt}", raising=False)
+    run = bridge.CLIRun("hi", None)
+    run.text = "some output\n"
+    run._finalize(0)
+    assert run.error is None
+    assert run.state == "1"
+
+
+def test_cli_run_finalize_no_state_when_resume_not_configured(monkeypatch):
+    monkeypatch.setattr(bridge, "CLI_ARGS_RESUME", None, raising=False)
+    run = bridge.CLIRun("hi", None)
+    run.text = "some output\n"
+    run._finalize(0)
+    assert run.error is None
+    assert run.state is None
+
+
+def test_cli_run_finalize_errors_on_empty_output():
+    run = bridge.CLIRun("hi", None)
+    run.text = "   \n"
+    run._finalize(1)
+    assert run.error is not None
+    assert run.state is None
+
+
+# ---------------------------------------------------------------------------
+# OpenAICompatibleRun's pure helpers — request building and SSE parsing,
+# testable without any real network call.
+# ---------------------------------------------------------------------------
+
+def test_openai_build_messages_without_system_prompt():
+    messages = bridge.openai_build_messages(None, [], "hello")
+    assert messages == [{"role": "user", "content": "hello"}]
+
+
+def test_openai_build_messages_with_system_prompt_and_history():
+    history = [
+        {"role": "user", "content": "first"},
+        {"role": "assistant", "content": "first reply"},
+    ]
+    messages = bridge.openai_build_messages("be terse", history, "second")
+    assert messages == [
+        {"role": "system", "content": "be terse"},
+        {"role": "user", "content": "first"},
+        {"role": "assistant", "content": "first reply"},
+        {"role": "user", "content": "second"},
+    ]
+
+
+def test_openai_parse_sse_line_extracts_delta():
+    line = 'data: {"choices":[{"delta":{"content":"Hel"}}]}'
+    assert bridge.openai_parse_sse_line(line) == "Hel"
+
+
+def test_openai_parse_sse_line_done_sentinel():
+    assert bridge.openai_parse_sse_line("data: [DONE]") == "[DONE]"
+
+
+def test_openai_parse_sse_line_ignores_non_data_lines():
+    assert bridge.openai_parse_sse_line("") is None
+    assert bridge.openai_parse_sse_line(": keep-alive") is None
+
+
+def test_openai_parse_sse_line_handles_empty_delta_chunk():
+    # A role-only chunk (the first one in a stream) has no "content" key.
+    line = 'data: {"choices":[{"delta":{"role":"assistant"}}]}'
+    assert bridge.openai_parse_sse_line(line) is None
+
+
+def test_openai_parse_sse_line_malformed_json_is_ignored():
+    assert bridge.openai_parse_sse_line("data: {not json") is None
+
+
+def test_openai_trim_history_keeps_most_recent():
+    history = [{"role": "user", "content": str(i)} for i in range(10)]
+    trimmed = bridge.openai_trim_history(history, 4)
+    assert trimmed == history[-4:]
+
+
+def test_openai_trim_history_noop_under_limit():
+    history = [{"role": "user", "content": "one"}]
+    assert bridge.openai_trim_history(history, 40) == history

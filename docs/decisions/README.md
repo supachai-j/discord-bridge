@@ -40,3 +40,4 @@ What this makes easier, harder, or simply true from now on.
 | [0002](0002-systemd-template-for-multi-agent.md) | systemd instantiated unit for running multiple agents |
 | [0003](0003-no-cd-manual-deploy.md) | No CD — deployment stays a manual, deliberate step |
 | [0004](0004-git-history-rewrite-before-public.md) | Rewriting git history before making the repo public |
+| [0005](0005-pluggable-backends.md) | Pluggable backends: agentic CLIs and OpenAI-compatible chat APIs |

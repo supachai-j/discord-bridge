@@ -2,32 +2,45 @@
 
 [![CI](https://github.com/supachai-j/discord-bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/supachai-j/discord-bridge/actions/workflows/ci.yml)
 
-A small Discord bot that pipes one channel into a resident [Claude Code](https://claude.com/claude-code) session. Every message from an allowed user spawns `claude -p --resume <session-id>`, streams the reply back into Discord by editing a placeholder message, and exits — no long-running Claude process, just a session id persisted between messages.
+A small Discord bot that pipes one channel into a resident AI coding agent — [Claude Code](https://claude.com/claude-code) by default, or another agentic CLI (Codex, Gemini CLI) or a plain chat API (grok, GLM, a local model) — see [Backends](#backends). Every message from an allowed user is sent to the backend, streams the reply back into Discord by editing a placeholder message, and persists whatever state that backend needs to continue the conversation next time.
 
 📖 Full docs site: **[supachai-j.github.io/discord-bridge](https://supachai-j.github.io/discord-bridge/)** · day-to-day operations: [docs/runbook.md](docs/runbook.md) · reporting a vulnerability: [SECURITY.md](SECURITY.md) · working on this codebase: [CONTRIBUTING.md](CONTRIBUTING.md)
 
 ```
-Discord channel --message--> bridge.py --spawn `claude -p --resume`--> claude subprocess
-      ^                          |  (author must be in the allowlist)         |
-      '--------- edit reply, every 1.5s while streaming ----------------------'
+Discord channel --message--> bridge.py --spawn/call a backend--> claude / another CLI / a chat API
+      ^                          |  (author must be in the allowlist)              |
+      '--------- edit reply, every 1.5s while streaming --------------------------'
 ```
 
 ## Features
 
-- **Streaming replies** — the placeholder message is edited live as Claude's output arrives, not dumped all at once at the end.
-- **Persistent conversation** — messages in the channel are turns in one ongoing `claude` session (`--resume`), not one-shot prompts.
-- **Hard allowlist** — wrong channel or wrong Discord user id, and the message never reaches Claude; everyone else just gets a 🚫 reaction.
-- **`!reset` / `!new`** — clear the session and start over, from Discord, without SSH.
-- **Self-healing** — a stale/deleted session id is detected from the error text and cleared automatically instead of wedging every future message.
-- **Watchdog timeout** — a hung `claude` subprocess is killed after `BRIDGE_TIMEOUT_SECONDS` instead of hanging forever.
-- **Clean shutdown** — `SIGTERM`/`SIGINT` (what `systemctl stop`/`restart` send) kill any in-flight `claude` subprocess instead of orphaning it; discord.py's own `client.run()` doesn't do this on its own.
-- **No permission bypass** — never runs with `--dangerously-skip-permissions` or a loosened `--permission-mode`; anything outside your `permissions.allow` fails closed, because a non-interactive `-p` run has no prompt surface for anyone to answer.
+- **Pluggable backends** — Claude Code by default; another agentic CLI (Codex, Gemini CLI) or any OpenAI-compatible chat API (grok, GLM, local models) via one env var. See [Backends](#backends).
+- **Streaming replies** — the placeholder message is edited live as output arrives, not dumped all at once at the end.
+- **Persistent conversation** — messages in the channel are turns in one ongoing conversation, not one-shot prompts (backend-dependent — see [Backends](#backends) for what "persistent" means for a stateless chat API).
+- **Hard allowlist** — wrong channel or wrong Discord user id, and the message never reaches the backend; everyone else just gets a 🚫 reaction.
+- **`!reset` / `!new`** — clear the conversation and start over, from Discord, without SSH.
+- **Self-healing** — a stale/invalid session is detected from the error text and cleared automatically instead of wedging every future message.
+- **Watchdog timeout** — a hung backend subprocess is killed after `BRIDGE_TIMEOUT_SECONDS` instead of hanging forever (the HTTP-based backend gets the same bound natively, via its own request timeout).
+- **Clean shutdown** — `SIGTERM`/`SIGINT` (what `systemctl stop`/`restart` send) kill any in-flight backend subprocess instead of orphaning it; discord.py's own `client.run()` doesn't do this on its own.
+- **No permission bypass** (Claude/CLI backends) — never runs with `--dangerously-skip-permissions` or a loosened `--permission-mode`; anything outside your `permissions.allow` fails closed, because a non-interactive run has no prompt surface for anyone to answer.
 
 ## Requirements
 
 - Python 3.10+
 - A Discord application + bot token with the **Message Content** privileged intent enabled, invited to your server with permission to view/send/manage messages in one channel
-- [`claude`](https://claude.com/claude-code) installed and already authenticated once, interactively, under whichever `CLAUDE_CONFIG_DIR` you point this at (a non-interactive `-p` run has nowhere to show a login prompt)
+- Whatever the chosen [backend](#backends) needs: `claude` installed and authenticated (default backend), another agentic CLI, or an API key for a chat endpoint
+
+## Backends
+
+One instance uses exactly one backend, chosen with `BACKEND` (see [Configuration](#configuration) and [`.env.example`](.env.example) for the full per-backend variable list). Running more than one model at once is running more than one instance — see [Running multiple agents](#running-multiple-agents); there's no per-message model switching.
+
+| `BACKEND` | What it runs | Tool access (files/shell) | Persistence |
+|---|---|---|---|
+| `claude` (default) | [`claude`](https://claude.com/claude-code) `-p --resume` | Yes, via `permissions.allow` | Server-side resumable session |
+| `cli` | Another agentic CLI you configure (Codex, Gemini CLI, ...) | Yes, whatever that CLI grants | Whatever that CLI's own resume flag supports — some (Gemini CLI's headless mode, currently) have none |
+| `openai_compatible` | Any `POST {base_url}/chat/completions` endpoint — grok, GLM, a local model via Ollama/vLLM/llama.cpp, etc. | **No** — chat only | A local message-history transcript this bridge maintains, truncated to `OPENAI_COMPATIBLE_MAX_HISTORY` |
+
+`claude` requires being authenticated once, interactively, under whichever `CLAUDE_CONFIG_DIR` you point this at first (a non-interactive `-p` run has nowhere to show a login prompt). `cli` needs the chosen CLI installed and its actual current flags confirmed — the codex/Gemini CLI examples in `.env.example` are researched but **not verified end-to-end** here; check `--help` on your own install before trusting them (see [ADR-0005](docs/decisions/0005-pluggable-backends.md)). `openai_compatible` needs only an API key file and a base URL — no CLI at all, which makes it the quickest way to try a local model.
 
 ## Setup
 
@@ -132,11 +145,15 @@ Everything is read from the environment — see [`.env.example`](.env.example) f
 | `DISCORD_BOT_TOKEN_FILE` | no | `~/.discord_bot_token` | path to the bot token (chmod 600 it) |
 | `DISCORD_CHANNEL_ID` | **yes** | — | the one channel the bot listens in |
 | `DISCORD_ALLOWED_USER_IDS` | **yes** | — | comma-separated Discord user ids allowed to command it |
-| `CLAUDE_BIN` | no | `claude` (from `PATH`) | path to the `claude` CLI |
-| `CLAUDE_CONFIG_DIR` | no | claude's own default (`~/.claude`) | run under a dedicated identity/history/`permissions.deny` — strongly recommended if you also use `claude` interactively, see [Security model](#security-model) |
-| `BRIDGE_WORKDIR` | no | `~` if unset — `.env.example` ships `~/workspace` | cwd for the `claude` subprocess — keep this off `$HOME` |
-| `BRIDGE_SESSION_FILE` | no | `~/discord-bridge/session_id.txt` | where the resumable session id is persisted |
-| `BRIDGE_TIMEOUT_SECONDS` | no | `1200` | kill a hung `claude` subprocess after this many seconds |
+| `BACKEND` | no | `claude` | `claude` / `cli` / `openai_compatible` — see [Backends](#backends) |
+| `CLAUDE_BIN` | no | `claude` (from `PATH`) | path to the `claude` CLI (`BACKEND=claude`) |
+| `CLAUDE_CONFIG_DIR` | no | claude's own default (`~/.claude`) | run under a dedicated identity/history/`permissions.deny` — strongly recommended if you also use `claude` interactively, see [Security model](#security-model) (`BACKEND=claude`) |
+| `BRIDGE_WORKDIR` | no | `~` if unset — `.env.example` ships `~/workspace` | cwd for a subprocess-based backend — keep this off `$HOME` |
+| `BRIDGE_SESSION_FILE` | no | `~/discord-bridge/session_id.txt` | where the backend's opaque state is persisted |
+| `BRIDGE_TIMEOUT_SECONDS` | no | `1200` | kill a hung backend after this many seconds |
+| `CLI_BIN`, `CLI_ARGS_NEW`, `CLI_ARGS_RESUME` | required for `cli` | — | the other agentic CLI's binary and argv templates — see `.env.example` |
+| `OPENAI_COMPATIBLE_BASE_URL`, `_API_KEY_FILE`, `_MODEL` | required for `openai_compatible` | — | endpoint, key file, and model name — see `.env.example` |
+| `OPENAI_COMPATIBLE_SYSTEM_PROMPT`, `_MAX_HISTORY` | no | unset, `40` | optional system prompt; how many prior messages to keep (`openai_compatible`) |
 
 ## Security model
 
@@ -149,6 +166,8 @@ Three gates, outside-in:
 If you're exposing this to anyone other than yourself, or the allowed user's machine isn't fully trusted, add explicit `Read()` deny rules for `~/.ssh`, your bot token file, and any credentials files, regardless of `BRIDGE_WORKDIR` — `Read()` rules match by path, not by cwd.
 
 Leaving `CLAUDE_CONFIG_DIR` unset means the bot runs under the *same* `permissions.allow`/`.deny` as your own interactive `claude` sessions on that machine — typically much broader than a bot needs. Set it to a dedicated config dir so a Discord message can't exercise permissions you only meant to grant yourself at a terminal.
+
+Gate 3 is specific to `claude`/`cli` backends. `openai_compatible` has no file/shell tool access at all — gates 1 and 2 (channel + allowlist) are the whole story for it, and the API key file is the only credential worth protecting.
 
 ## Known limitations
 

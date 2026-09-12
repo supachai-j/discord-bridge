@@ -189,6 +189,7 @@
       <a href="#overview">Overview</a>
       <a href="#features">Features</a>
       <a href="#requirements">Requirements</a>
+      <a href="#backends">Backends</a>
       <a href="#quickstart">Quickstart</a>
     </div>
     <div class="grp">
@@ -211,7 +212,7 @@
     <header class="hero" id="overview">
       <div class="eyebrow"><span class="dot"></span>MIT LICENSED · SELF-HOSTED · NO CLOUD DEPENDENCY</div>
       <h1 class="hero-title display">Talk to Claude Code<br>from a Discord channel</h1>
-      <p class="hero-dek">discord-bridge is a small, single-file Python bot that pipes one Discord channel into a resident <a href="https://claude.com/claude-code">Claude Code</a> session. Every allowed message spawns <code>claude -p --resume</code>, streams the reply back by editing a placeholder message, and exits — no server, no database, just a session id persisted between messages.</p>
+      <p class="hero-dek">discord-bridge is a small, single-file Python bot that pipes one Discord channel into a resident AI coding agent — <a href="https://claude.com/claude-code">Claude Code</a> by default, or a pluggable backend of your choice. Every allowed message streams a reply back by editing a placeholder message — no server, no database, just an opaque piece of state persisted between messages.</p>
       <div class="hero-ctas">
         <a class="btn primary" href="#quickstart">Get started →</a>
         <a class="btn" href="https://github.com/supachai-j/discord-bridge/releases">Releases</a>
@@ -224,14 +225,15 @@
     <section id="features">
       <h2 class="sec-title display">Features</h2>
       <div class="features">
-        <div class="feature"><h3>Streaming replies</h3><p>The placeholder message is edited live as Claude's output arrives — not dumped all at once at the end.</p></div>
-        <div class="feature"><h3>Persistent conversation</h3><p>Messages in the channel are turns in one ongoing <code>claude</code> session (<code>--resume</code>), not one-shot prompts.</p></div>
-        <div class="feature"><h3>Hard allowlist</h3><p>Wrong channel or wrong Discord user id, and the message never reaches Claude — everyone else gets a 🚫 reaction.</p></div>
-        <div class="feature"><h3><code>!reset</code> / <code>!new</code></h3><p>Clear the session and start over, from Discord, without SSH.</p></div>
-        <div class="feature"><h3>Self-healing</h3><p>A stale or deleted session id is detected from the error text and cleared automatically.</p></div>
-        <div class="feature"><h3>Watchdog timeout</h3><p>A hung <code>claude</code> subprocess is killed after <code>BRIDGE_TIMEOUT_SECONDS</code> instead of hanging forever.</p></div>
+        <div class="feature"><h3>Pluggable backends</h3><p>Claude Code by default; another agentic CLI or any OpenAI-compatible chat API (grok, GLM, local models) via one env var.</p></div>
+        <div class="feature"><h3>Streaming replies</h3><p>The placeholder message is edited live as output arrives — not dumped all at once at the end.</p></div>
+        <div class="feature"><h3>Persistent conversation</h3><p>Messages in the channel are turns in one ongoing conversation, not one-shot prompts.</p></div>
+        <div class="feature"><h3>Hard allowlist</h3><p>Wrong channel or wrong Discord user id, and the message never reaches the backend — everyone else gets a 🚫 reaction.</p></div>
+        <div class="feature"><h3><code>!reset</code> / <code>!new</code></h3><p>Clear the conversation and start over, from Discord, without SSH.</p></div>
+        <div class="feature"><h3>Self-healing</h3><p>A stale or invalid session is detected from the error text and cleared automatically.</p></div>
+        <div class="feature"><h3>Watchdog timeout</h3><p>A hung backend is killed after <code>BRIDGE_TIMEOUT_SECONDS</code> instead of hanging forever.</p></div>
         <div class="feature"><h3>Clean shutdown</h3><p><code>SIGTERM</code>/<code>SIGINT</code> kill any in-flight subprocess and close the gateway gracefully — <code>systemctl restart</code> doesn't orphan anything.</p></div>
-        <div class="feature"><h3>No permission bypass</h3><p>Never runs with <code>--dangerously-skip-permissions</code>; anything outside your <code>permissions.allow</code> just fails.</p></div>
+        <div class="feature"><h3>No permission bypass</h3><p>Claude/CLI backends never run with <code>--dangerously-skip-permissions</code>; anything outside your <code>permissions.allow</code> just fails.</p></div>
       </div>
     </section>
 
@@ -241,8 +243,27 @@
         <ul>
           <li>Python 3.10+</li>
           <li>A Discord application + bot token with the <strong>Message Content</strong> privileged intent enabled, invited to your server with permission to view/send/manage messages in one channel</li>
-          <li><a href="https://claude.com/claude-code">claude</a> installed and already authenticated once, interactively, under whichever <code>CLAUDE_CONFIG_DIR</code> you point this at — a non-interactive <code>-p</code> run has nowhere to show a login prompt</li>
+          <li>Whatever the chosen backend needs — see below</li>
         </ul>
+      </div>
+    </section>
+
+    <section id="backends">
+      <h2 class="sec-title display">Backends</h2>
+      <p class="sec-intro">One instance uses exactly one backend, chosen with <code>BACKEND</code>. Running more than one model is running more than one instance (see <a href="#multi-agent">Running multiple agents</a>) — there's no per-message model switching.</p>
+      <div class="tablewrap">
+        <table>
+          <thead><tr><th class="mono">BACKEND</th><th>Runs</th><th>Tool access</th><th>Persistence</th></tr></thead>
+          <tbody>
+            <tr><td class="mono">claude <em>(default)</em></td><td><a href="https://claude.com/claude-code">claude</a> <code>-p --resume</code></td><td>Yes, via <code>permissions.allow</code></td><td>Server-side resumable session</td></tr>
+            <tr><td class="mono">cli</td><td>Another agentic CLI you configure (Codex, Gemini CLI, ...)</td><td>Yes, whatever that CLI grants</td><td>Whatever that CLI's resume flag supports — some have none</td></tr>
+            <tr><td class="mono">openai_compatible</td><td>Any <code>POST {base_url}/chat/completions</code> endpoint — grok, GLM, a local model via Ollama/vLLM/llama.cpp</td><td><strong>No</strong> — chat only</td><td>A local transcript this bridge maintains, truncated to <code>OPENAI_COMPATIBLE_MAX_HISTORY</code></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="callout">
+        <div class="lbl display">Not the same as codex/Gemini CLI's own agentic ability</div>
+        <p><code>openai_compatible</code> is chat only — no file edits, no shell commands. <code>cli</code>'s example configs for Codex/Gemini CLI in <code>.env.example</code> are researched but not verified end-to-end here (neither CLI is installed on the machine this was built on) — confirm against your own install's <code>--help</code> before deploying. See <a href="https://github.com/supachai-j/discord-bridge/blob/main/docs/decisions/0005-pluggable-backends.md">ADR-0005</a>.</p>
       </div>
     </section>
 
@@ -330,11 +351,14 @@ sudo systemctl enable --now discord-bridge@myagent.service</code></pre>
             <tr><td class="mono">DISCORD_BOT_TOKEN_FILE</td><td>no</td><td class="mono">~/.discord_bot_token</td><td>path to the bot token</td></tr>
             <tr><td class="mono">DISCORD_CHANNEL_ID</td><td><strong>yes</strong></td><td>—</td><td>the one channel the bot listens in</td></tr>
             <tr><td class="mono">DISCORD_ALLOWED_USER_IDS</td><td><strong>yes</strong></td><td>—</td><td>comma-separated Discord user ids allowed to command it</td></tr>
-            <tr><td class="mono">CLAUDE_BIN</td><td>no</td><td class="mono">claude</td><td>path to the claude CLI</td></tr>
+            <tr><td class="mono">BACKEND</td><td>no</td><td class="mono">claude</td><td><code>claude</code> / <code>cli</code> / <code>openai_compatible</code> — see Backends</td></tr>
+            <tr><td class="mono">CLAUDE_BIN</td><td>no</td><td class="mono">claude</td><td>path to the claude CLI (<code>BACKEND=claude</code>)</td></tr>
             <tr><td class="mono">CLAUDE_CONFIG_DIR</td><td>no</td><td>claude's default</td><td>run under a dedicated identity/permissions — see Security</td></tr>
-            <tr><td class="mono">BRIDGE_WORKDIR</td><td>no</td><td class="mono">~</td><td>cwd for the claude subprocess — keep off <code>$HOME</code></td></tr>
-            <tr><td class="mono">BRIDGE_SESSION_FILE</td><td>no</td><td class="mono">~/discord-bridge/session_id.txt</td><td>where the resumable session id lives</td></tr>
-            <tr><td class="mono">BRIDGE_TIMEOUT_SECONDS</td><td>no</td><td class="mono">1200</td><td>kill a hung subprocess after this long</td></tr>
+            <tr><td class="mono">BRIDGE_WORKDIR</td><td>no</td><td class="mono">~</td><td>cwd for a subprocess backend — keep off <code>$HOME</code></td></tr>
+            <tr><td class="mono">BRIDGE_SESSION_FILE</td><td>no</td><td class="mono">~/discord-bridge/session_id.txt</td><td>where the backend's opaque state lives</td></tr>
+            <tr><td class="mono">BRIDGE_TIMEOUT_SECONDS</td><td>no</td><td class="mono">1200</td><td>kill a hung backend after this long</td></tr>
+            <tr><td class="mono">CLI_BIN / CLI_ARGS_NEW / CLI_ARGS_RESUME</td><td>for <code>cli</code></td><td>—</td><td>the other CLI's binary and argv templates</td></tr>
+            <tr><td class="mono">OPENAI_COMPATIBLE_BASE_URL / _API_KEY_FILE / _MODEL</td><td>for <code>openai_compatible</code></td><td>—</td><td>endpoint, key file, model name</td></tr>
           </tbody>
         </table>
       </div>

@@ -20,6 +20,10 @@ rm discord-bridge/instances/<name>.session_id.txt   # path per instances/<name>.
 
 # Confirm nothing was orphaned by a restart
 ps aux | grep bridge.py
+
+# Which backend an instance is actually running (also shown in the
+# "logged in as ..." startup log line)
+grep -E '^BACKEND=' discord-bridge/instances/<name>.env || echo claude   # unset = claude
 ```
 
 Single-instance (flat `discord-bridge.service` instead of the `@` template) deployments: drop `@<name>` from the unit name and use `session_id.txt` / `.env` at the repo root instead of `instances/`.
@@ -35,7 +39,9 @@ Single-instance (flat `discord-bridge.service` instead of the `@` template) depl
 | `busy — คำสั่งก่อนหน้ายังไม่เสร็จ` | Working as intended — messages aren't queued | Wait for the current run to finish, then resend. |
 | Bot goes offline right after `systemctl restart`, back online a few seconds later | Normal — SIGTERM triggers a graceful `client.close()` before the new process starts | If it takes noticeably longer than a couple of seconds, or the old process is still running (`ps aux | grep bridge.py`), something's wrong with shutdown — see the `_shutdown` fix in the ledger. |
 | Preview message stops updating mid-run but the final reply still arrives | Discord edit rate limit — backs off and logs it (`journalctl`) instead of retrying at a fixed cadence | Not an error; the final result still lands as a fresh message if the edit ultimately fails. |
-| Bot won't start; log says `missing required env var ...` | `.env` (or `instances/<name>.env`) is missing a required variable, or it's malformed | The message names the variable — check it against `.env.example`. This fails fast on purpose rather than falling back to an insecure or nonsensical default. |
+| Bot won't start; log says `missing required env var ...` | `.env` (or `instances/<name>.env`) is missing a required variable, or it's malformed | The message names the variable — check it against `.env.example`. This fails fast on purpose rather than falling back to an insecure or nonsensical default. Note the missing-var message also names which `BACKEND` it's required for. |
+| `BACKEND=cli` agent replies with `(exit N, no output)` every time | The configured CLI's actual flags don't match `CLI_ARGS_NEW`/`CLI_ARGS_RESUME` — these are documented examples, not verified against an installed CLI (see [ADR-0005](decisions/0005-pluggable-backends.md)) | Run the exact argv by hand (`journalctl` doesn't show it, but you can reconstruct it from `CLI_BIN`+`CLI_ARGS_NEW` with `{prompt}` substituted) and check against the CLI's own `--help` |
+| `BACKEND=openai_compatible` agent replies with `HTTP 401`/`HTTP 403` | Bad or missing API key | Check `OPENAI_COMPATIBLE_API_KEY_FILE` contains just the key, no quotes/newline issues, mode 600 |
 
 ## Suspected security incident
 
