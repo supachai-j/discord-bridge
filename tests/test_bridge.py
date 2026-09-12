@@ -154,6 +154,7 @@ def _patch_claude_defaults(monkeypatch):
     monkeypatch.setattr(bridge, "CLAUDE_BIN", "claude", raising=False)
     monkeypatch.setattr(bridge, "CLAUDE_MODEL", None, raising=False)
     monkeypatch.setattr(bridge, "CLAUDE_FALLBACK_MODEL", None, raising=False)
+    monkeypatch.setattr(bridge, "CLAUDE_EFFORT", None, raising=False)
 
 
 def test_claude_run_build_argv_base(monkeypatch):
@@ -196,11 +197,28 @@ def test_claude_run_build_argv_includes_fallback_model_when_set(monkeypatch):
     assert argv[argv.index("--fallback-model") + 1] == "sonnet"
 
 
+def test_claude_run_build_argv_includes_effort_when_set(monkeypatch):
+    _patch_claude_defaults(monkeypatch)
+    monkeypatch.setattr(bridge, "CLAUDE_EFFORT", "xhigh", raising=False)
+    argv = bridge.ClaudeRun("hi", None)._build_argv()
+    assert "--effort" in argv
+    assert argv[argv.index("--effort") + 1] == "xhigh"
+
+
+def test_load_config_rejects_bad_claude_effort(monkeypatch):
+    monkeypatch.setenv("DISCORD_CHANNEL_ID", "1")
+    monkeypatch.setenv("DISCORD_ALLOWED_USER_IDS", "1")
+    monkeypatch.setenv("CLAUDE_EFFORT", "extreme")
+    with pytest.raises(SystemExit, match="must be low, medium, high, xhigh, or max"):
+        bridge._load_config()
+
+
 def test_claude_run_build_argv_omits_model_flags_when_unset(monkeypatch):
     _patch_claude_defaults(monkeypatch)
     argv = bridge.ClaudeRun("hi", None)._build_argv()
     assert "--model" not in argv
     assert "--fallback-model" not in argv
+    assert "--effort" not in argv
 
 
 # ---------------------------------------------------------------------------

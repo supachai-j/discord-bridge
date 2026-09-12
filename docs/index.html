@@ -354,6 +354,7 @@ sudo systemctl enable --now discord-bridge@myagent.service</code></pre>
             <tr><td class="mono">BACKEND</td><td>no</td><td class="mono">claude</td><td><code>claude</code> / <code>cli</code> / <code>openai_compatible</code> — see Backends</td></tr>
             <tr><td class="mono">CLAUDE_BIN</td><td>no</td><td class="mono">claude</td><td>path to the claude CLI — use a full path under systemd (<code>BACKEND=claude</code>)</td></tr>
             <tr><td class="mono">CLAUDE_MODEL / CLAUDE_FALLBACK_MODEL</td><td>no</td><td>claude's default</td><td>which model answers, plus an automatic fallback (<code>BACKEND=claude</code>)</td></tr>
+            <tr><td class="mono">CLAUDE_EFFORT</td><td>no</td><td>claude's default</td><td>low / medium / high / xhigh / max (<code>BACKEND=claude</code>)</td></tr>
             <tr><td class="mono">CLAUDE_CONFIG_DIR</td><td>no</td><td>claude's default</td><td>run under a dedicated identity/permissions — see Security</td></tr>
             <tr><td class="mono">BRIDGE_WORKDIR</td><td>no</td><td class="mono">~</td><td>cwd for a subprocess backend — keep off <code>$HOME</code></td></tr>
             <tr><td class="mono">BRIDGE_SESSION_FILE</td><td>no</td><td class="mono">~/discord-bridge/session_id.txt</td><td>where the backend's opaque state lives</td></tr>

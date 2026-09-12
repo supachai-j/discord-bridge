@@ -77,7 +77,7 @@ def _load_config():
     # place. See .env.example for what each of these does; nothing
     # deployment-specific is hardcoded, so this file has nothing to sanitize
     # before it's shared — every installer edits .env, never bridge.py.
-    global TOKEN_FILE, CHANNEL_ID, ALLOWED_USER_IDS, CLAUDE_BIN, CLAUDE_MODEL, CLAUDE_FALLBACK_MODEL
+    global TOKEN_FILE, CHANNEL_ID, ALLOWED_USER_IDS, CLAUDE_BIN, CLAUDE_MODEL, CLAUDE_FALLBACK_MODEL, CLAUDE_EFFORT
     global CLAUDE_CONFIG_DIR, WORKDIR, SESSION_FILE, TIMEOUT_SECONDS, LOG_LEVEL
     global BACKEND, CLI_BIN, CLI_ARGS_NEW, CLI_ARGS_RESUME
     global OPENAI_COMPATIBLE_BASE_URL, OPENAI_COMPATIBLE_API_KEY_FILE, OPENAI_COMPATIBLE_MODEL
@@ -106,6 +106,14 @@ def _load_config():
     # or a full model name, same as `claude --model`.
     CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL")
     CLAUDE_FALLBACK_MODEL = os.environ.get("CLAUDE_FALLBACK_MODEL")
+    # Optional — unset means whatever claude's own default effort level is.
+    # Validated against the fixed set `claude --effort` accepts, same
+    # fail-fast-on-a-bad-value philosophy as everything else here (a typo'd
+    # value should refuse to start, not silently fall back to something
+    # unintended).
+    CLAUDE_EFFORT = os.environ.get("CLAUDE_EFFORT", "").strip().lower() or None
+    if CLAUDE_EFFORT and CLAUDE_EFFORT not in ("low", "medium", "high", "xhigh", "max"):
+        raise SystemExit(f"CLAUDE_EFFORT={CLAUDE_EFFORT!r} — must be low, medium, high, xhigh, or max")
     # Recommended: point WORKDIR somewhere other than $HOME. It's defense-in-
     # depth on top of whatever permissions.deny rules you put in claude's
     # settings.json (those block Read() on secrets regardless of cwd) —
@@ -349,6 +357,8 @@ class ClaudeRun(_WatchedSubprocessRun):
             argv += ["--model", CLAUDE_MODEL]
         if CLAUDE_FALLBACK_MODEL:
             argv += ["--fallback-model", CLAUDE_FALLBACK_MODEL]
+        if CLAUDE_EFFORT:
+            argv += ["--effort", CLAUDE_EFFORT]
         return argv
 
     def _env_overrides(self):

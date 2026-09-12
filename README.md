@@ -148,6 +148,7 @@ Everything is read from the environment — see [`.env.example`](.env.example) f
 | `BACKEND` | no | `claude` | `claude` / `cli` / `openai_compatible` — see [Backends](#backends) |
 | `CLAUDE_BIN` | no | `claude` (from `PATH`) | path to the `claude` CLI — **use a full path under systemd**, its `PATH` usually excludes `~/.local/bin` (`BACKEND=claude`) |
 | `CLAUDE_MODEL`, `CLAUDE_FALLBACK_MODEL` | no | claude's own default | which model answers, and an automatic fallback if it's overloaded — same values as `claude --model` (`BACKEND=claude`) |
+| `CLAUDE_EFFORT` | no | claude's own default | `low` / `medium` / `high` / `xhigh` / `max` — same as `claude --effort`; any other value refuses to start (`BACKEND=claude`) |
 | `CLAUDE_CONFIG_DIR` | no | claude's own default (`~/.claude`) | run under a dedicated identity/history/`permissions.deny` — strongly recommended if you also use `claude` interactively, see [Security model](#security-model) (`BACKEND=claude`) |
 | `BRIDGE_WORKDIR` | no | `~` if unset — `.env.example` ships `~/workspace` | cwd for a subprocess-based backend — keep this off `$HOME` |
 | `BRIDGE_SESSION_FILE` | no | `~/discord-bridge/session_id.txt` | where the backend's opaque state is persisted |
