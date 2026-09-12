@@ -77,7 +77,7 @@ def _load_config():
     # place. See .env.example for what each of these does; nothing
     # deployment-specific is hardcoded, so this file has nothing to sanitize
     # before it's shared — every installer edits .env, never bridge.py.
-    global TOKEN_FILE, CHANNEL_ID, ALLOWED_USER_IDS, CLAUDE_BIN
+    global TOKEN_FILE, CHANNEL_ID, ALLOWED_USER_IDS, CLAUDE_BIN, CLAUDE_MODEL, CLAUDE_FALLBACK_MODEL
     global CLAUDE_CONFIG_DIR, WORKDIR, SESSION_FILE, TIMEOUT_SECONDS, LOG_LEVEL
     global BACKEND, CLI_BIN, CLI_ARGS_NEW, CLI_ARGS_RESUME
     global OPENAI_COMPATIBLE_BASE_URL, OPENAI_COMPATIBLE_API_KEY_FILE, OPENAI_COMPATIBLE_MODEL
@@ -101,6 +101,11 @@ def _load_config():
 
     CLAUDE_BIN = os.environ.get("CLAUDE_BIN", "claude")
     CLAUDE_CONFIG_DIR = os.environ.get("CLAUDE_CONFIG_DIR")  # optional — unset means claude's own default
+    # Optional — unset means whatever claude's own default model is for this
+    # CLAUDE_CONFIG_DIR/account. Accepts an alias ("opus", "sonnet", "fable")
+    # or a full model name, same as `claude --model`.
+    CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL")
+    CLAUDE_FALLBACK_MODEL = os.environ.get("CLAUDE_FALLBACK_MODEL")
     # Recommended: point WORKDIR somewhere other than $HOME. It's defense-in-
     # depth on top of whatever permissions.deny rules you put in claude's
     # settings.json (those block Read() on secrets regardless of cwd) —
@@ -340,6 +345,10 @@ class ClaudeRun(_WatchedSubprocessRun):
         ]
         if self.state:
             argv += ["--resume", self.state]
+        if CLAUDE_MODEL:
+            argv += ["--model", CLAUDE_MODEL]
+        if CLAUDE_FALLBACK_MODEL:
+            argv += ["--fallback-model", CLAUDE_FALLBACK_MODEL]
         return argv
 
     def _env_overrides(self):

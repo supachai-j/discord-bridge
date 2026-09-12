@@ -146,7 +146,8 @@ Everything is read from the environment — see [`.env.example`](.env.example) f
 | `DISCORD_CHANNEL_ID` | **yes** | — | the one channel the bot listens in |
 | `DISCORD_ALLOWED_USER_IDS` | **yes** | — | comma-separated Discord user ids allowed to command it |
 | `BACKEND` | no | `claude` | `claude` / `cli` / `openai_compatible` — see [Backends](#backends) |
-| `CLAUDE_BIN` | no | `claude` (from `PATH`) | path to the `claude` CLI (`BACKEND=claude`) |
+| `CLAUDE_BIN` | no | `claude` (from `PATH`) | path to the `claude` CLI — **use a full path under systemd**, its `PATH` usually excludes `~/.local/bin` (`BACKEND=claude`) |
+| `CLAUDE_MODEL`, `CLAUDE_FALLBACK_MODEL` | no | claude's own default | which model answers, and an automatic fallback if it's overloaded — same values as `claude --model` (`BACKEND=claude`) |
 | `CLAUDE_CONFIG_DIR` | no | claude's own default (`~/.claude`) | run under a dedicated identity/history/`permissions.deny` — strongly recommended if you also use `claude` interactively, see [Security model](#security-model) (`BACKEND=claude`) |
 | `BRIDGE_WORKDIR` | no | `~` if unset — `.env.example` ships `~/workspace` | cwd for a subprocess-based backend — keep this off `$HOME` |
 | `BRIDGE_SESSION_FILE` | no | `~/discord-bridge/session_id.txt` | where the backend's opaque state is persisted |

@@ -147,6 +147,63 @@ def test_load_session_id_empty_file_is_none(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# ClaudeRun._build_argv — model/fallback-model selection and --resume.
+# ---------------------------------------------------------------------------
+
+def _patch_claude_defaults(monkeypatch):
+    monkeypatch.setattr(bridge, "CLAUDE_BIN", "claude", raising=False)
+    monkeypatch.setattr(bridge, "CLAUDE_MODEL", None, raising=False)
+    monkeypatch.setattr(bridge, "CLAUDE_FALLBACK_MODEL", None, raising=False)
+
+
+def test_claude_run_build_argv_base(monkeypatch):
+    _patch_claude_defaults(monkeypatch)
+    run = bridge.ClaudeRun("hi", None)
+    assert run._build_argv() == [
+        "claude", "-p", "hi",
+        "--output-format", "stream-json",
+        "--include-partial-messages",
+        "--verbose",
+    ]
+
+
+def test_claude_run_build_argv_includes_resume_when_state_present(monkeypatch):
+    _patch_claude_defaults(monkeypatch)
+    run = bridge.ClaudeRun("continue", "abc-123")
+    argv = run._build_argv()
+    assert argv[-2:] == ["--resume", "abc-123"]
+
+
+def test_claude_run_build_argv_no_resume_flag_without_state(monkeypatch):
+    _patch_claude_defaults(monkeypatch)
+    run = bridge.ClaudeRun("hi", None)
+    assert "--resume" not in run._build_argv()
+
+
+def test_claude_run_build_argv_includes_model_when_set(monkeypatch):
+    _patch_claude_defaults(monkeypatch)
+    monkeypatch.setattr(bridge, "CLAUDE_MODEL", "opus", raising=False)
+    argv = bridge.ClaudeRun("hi", None)._build_argv()
+    assert "--model" in argv
+    assert argv[argv.index("--model") + 1] == "opus"
+
+
+def test_claude_run_build_argv_includes_fallback_model_when_set(monkeypatch):
+    _patch_claude_defaults(monkeypatch)
+    monkeypatch.setattr(bridge, "CLAUDE_FALLBACK_MODEL", "sonnet", raising=False)
+    argv = bridge.ClaudeRun("hi", None)._build_argv()
+    assert "--fallback-model" in argv
+    assert argv[argv.index("--fallback-model") + 1] == "sonnet"
+
+
+def test_claude_run_build_argv_omits_model_flags_when_unset(monkeypatch):
+    _patch_claude_defaults(monkeypatch)
+    argv = bridge.ClaudeRun("hi", None)._build_argv()
+    assert "--model" not in argv
+    assert "--fallback-model" not in argv
+
+
+# ---------------------------------------------------------------------------
 # Backend selection (make_run) — BACKEND is normally set by _load_config(),
 # but tests set the module attribute directly to isolate the factory logic
 # from environment parsing.
