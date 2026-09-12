@@ -1,6 +1,8 @@
 import asyncio
+import base64
 import json
 import logging
+import mimetypes
 import os
 import re
 import shlex
@@ -208,6 +210,42 @@ def chunk_text(text, size=DISCORD_CHUNK):
     return [text[i:i + size] for i in range(0, len(text), size)]
 
 
+def prompt_with_images(prompt, image_paths):
+    """For filesystem-based backends (claude, cli): they have no direct way
+    to receive an image except by using their own Read tool on a path, so
+    attached images are referenced as local file paths appended to the
+    prompt text, not embedded. Requires the path to be inside the backend's
+    own working directory — Claude Code (and most agentic CLIs) sandbox
+    file tool access to the cwd tree, so a path outside it is silently
+    denied rather than read."""
+    if not image_paths:
+        return prompt
+    listing = "\n".join(image_paths)
+    return f"{prompt}\n\n[ผู้ใช้แนบไฟล์รูปภาพมาด้วย ดูได้ที่:]\n{listing}"
+
+
+def openai_image_part(path):
+    """One `image_url` content part for the OpenAI chat-completions message
+    format, from a local file — base64 data URI, since these are one-shot
+    HTTP requests with no shared filesystem the far end could read from."""
+    mime = mimetypes.guess_type(path)[0] or "application/octet-stream"
+    with open(path, "rb") as f:
+        b64 = base64.b64encode(f.read()).decode("ascii")
+    return {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}}
+
+
+def openai_user_content(prompt, image_paths):
+    """The `content` value for a user message: a plain string when there
+    are no images (unchanged from before this feature existed, so old
+    saved history round-trips fine), or the multi-part list form when
+    there are — only a vision-capable model will actually use the image
+    parts, but a non-vision model just ignores content types it doesn't
+    understand rather than erroring, per the OpenAI wire format."""
+    if not image_paths:
+        return prompt
+    return [{"type": "text", "text": prompt}] + [openai_image_part(p) for p in image_paths]
+
+
 class BackendRun:
     """Common shape every backend exposes to on_message, regardless of
     whether it's actually a subprocess or an HTTP call underneath: a live
@@ -216,8 +254,9 @@ class BackendRun:
     a resumable session id string for an agent CLI, a serialized transcript
     for a stateless chat API, or None if the backend has no persistence."""
 
-    def __init__(self, prompt, state):
+    def __init__(self, prompt, state, images=None):
         self.prompt = prompt
+        self.images = images or []  # local file paths, already downloaded
         self.text = ""
         self.error = None
         # Starts as the *input* state (what to resume from) and is
@@ -242,8 +281,8 @@ class _WatchedSubprocessRun(BackendRun):
     process after TIMEOUT_SECONDS. Subclasses implement _build_argv(),
     _handle_line(), and _finalize()."""
 
-    def __init__(self, prompt, state):
-        super().__init__(prompt, state)
+    def __init__(self, prompt, state, images=None):
+        super().__init__(prompt, state, images)
         self.proc = None
         self.stderr_tail = ""
         self.timed_out = False
@@ -340,13 +379,13 @@ class ClaudeRun(_WatchedSubprocessRun):
     _handle_line/_finalize; their behavior must stay identical to what
     shipped as StreamRun before this file supported multiple backends."""
 
-    def __init__(self, prompt, state):
-        super().__init__(prompt, state)
+    def __init__(self, prompt, state, images=None):
+        super().__init__(prompt, state, images)
         self._final = None
 
     def _build_argv(self):
         argv = [
-            CLAUDE_BIN, "-p", self.prompt,
+            CLAUDE_BIN, "-p", prompt_with_images(self.prompt, self.images),
             "--output-format", "stream-json",
             "--include-partial-messages",
             "--verbose",
@@ -402,7 +441,8 @@ class CLIRun(_WatchedSubprocessRun):
     and tested live. See docs/decisions/0005-pluggable-backends.md."""
 
     def _substitute(self, template):
-        return [self.prompt if tok == "{prompt}" else tok for tok in shlex.split(template)]
+        prompt = prompt_with_images(self.prompt, self.images)
+        return [prompt if tok == "{prompt}" else tok for tok in shlex.split(template)]
 
     def _build_argv(self):
         template = CLI_ARGS_RESUME if (self.state and CLI_ARGS_RESUME) else CLI_ARGS_NEW
@@ -496,7 +536,8 @@ class OpenAICompatibleRun(BackendRun):
             except (json.JSONDecodeError, TypeError):
                 history = []
 
-        messages = openai_build_messages(OPENAI_COMPATIBLE_SYSTEM_PROMPT, history, self.prompt)
+        user_content = openai_user_content(self.prompt, self.images)
+        messages = openai_build_messages(OPENAI_COMPATIBLE_SYSTEM_PROMPT, history, user_content)
         payload = {"model": OPENAI_COMPATIBLE_MODEL, "messages": messages, "stream": True}
         headers = {
             "Authorization": f"Bearer {self._read_api_key()}",
@@ -521,6 +562,10 @@ class OpenAICompatibleRun(BackendRun):
         if not self.text:
             self.error = "(no output)"
             return
+        # Saved history keeps only self.prompt (text), not user_content —
+        # an image is relevant to the turn it arrived in, and re-sending its
+        # base64 data on every later turn would otherwise grow each request
+        # (and the token cost) by that much, forever.
         new_history = history + [
             {"role": "user", "content": self.prompt},
             {"role": "assistant", "content": self.text},
@@ -535,8 +580,27 @@ _BACKEND_RUN_CLASSES = {
 }
 
 
-def make_run(prompt, state):
-    return _BACKEND_RUN_CLASSES[BACKEND](prompt, state)
+def make_run(prompt, state, images=None):
+    return _BACKEND_RUN_CLASSES[BACKEND](prompt, state, images)
+
+
+async def save_image_attachments(message):
+    """Download any image attachments to a directory under WORKDIR, so a
+    filesystem-based backend's Read tool can actually see them — Claude Code
+    (and most agentic CLIs) sandbox file access to their cwd tree, so a path
+    elsewhere (e.g. a bare /tmp file) is silently denied rather than read.
+    Returns the local paths; harmless (just an empty list) for a text-only
+    message or a backend nobody's pointed a vision model at."""
+    paths = []
+    attach_dir = os.path.join(WORKDIR, "discord-attachments")
+    for attachment in message.attachments:
+        if not (attachment.content_type or "").startswith("image/"):
+            continue
+        os.makedirs(attach_dir, exist_ok=True)
+        path = os.path.join(attach_dir, f"{message.id}-{attachment.id}-{attachment.filename}")
+        await attachment.save(path)
+        paths.append(path)
+    return paths
 
 
 intents = discord.Intents.default()
@@ -582,8 +646,9 @@ async def on_message(message: discord.Message):
 
     async with busy_lock:
         thinking = await message.reply("⏳ กำลังเริ่มทำงาน...", mention_author=False)
+        images = await save_image_attachments(message)
         state_in = load_session_id()
-        run = make_run(message.content, state_in)
+        run = make_run(message.content, state_in, images)
         run.start()
 
         last_shown = None

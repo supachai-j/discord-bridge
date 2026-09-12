@@ -363,3 +363,62 @@ def test_openai_trim_history_keeps_most_recent():
 def test_openai_trim_history_noop_under_limit():
     history = [{"role": "user", "content": "one"}]
     assert bridge.openai_trim_history(history, 40) == history
+
+
+# ---------------------------------------------------------------------------
+# Image attachments — prompt_with_images (filesystem backends) and the
+# openai_* helpers (chat-API backend).
+# ---------------------------------------------------------------------------
+
+def test_prompt_with_images_unchanged_without_images():
+    assert bridge.prompt_with_images("hello", []) == "hello"
+    assert bridge.prompt_with_images("hello", None) == "hello"
+
+
+def test_prompt_with_images_appends_paths():
+    result = bridge.prompt_with_images("what is this?", ["/a/b.png", "/a/c.jpg"])
+    assert result.startswith("what is this?\n\n")
+    assert "/a/b.png" in result
+    assert "/a/c.jpg" in result
+
+
+def test_claude_run_build_argv_includes_image_paths(monkeypatch):
+    _patch_claude_defaults(monkeypatch)
+    run = bridge.ClaudeRun("what is this?", None, images=["/a/b.png"])
+    argv = run._build_argv()
+    assert "/a/b.png" in argv[argv.index("-p") + 1]
+
+
+def test_cli_run_build_argv_includes_image_paths(monkeypatch):
+    monkeypatch.setattr(bridge, "CLI_BIN", "codex", raising=False)
+    monkeypatch.setattr(bridge, "CLI_ARGS_NEW", "exec {prompt}", raising=False)
+    monkeypatch.setattr(bridge, "CLI_ARGS_RESUME", None, raising=False)
+    run = bridge.CLIRun("what is this?", None, images=["/a/b.png"])
+    argv = run._build_argv()
+    assert "/a/b.png" in argv[-1]
+
+
+def test_openai_image_part_encodes_base64_with_correct_mime(tmp_path):
+    png_bytes = b"\x89PNG\r\n\x1a\nfake-but-fine-for-this-test"
+    path = tmp_path / "pic.png"
+    path.write_bytes(png_bytes)
+    part = bridge.openai_image_part(str(path))
+    assert part["type"] == "image_url"
+    url = part["image_url"]["url"]
+    assert url.startswith("data:image/png;base64,")
+    import base64
+    encoded = url.split(",", 1)[1]
+    assert base64.b64decode(encoded) == png_bytes
+
+
+def test_openai_user_content_no_images_returns_plain_string():
+    assert bridge.openai_user_content("hi", []) == "hi"
+
+
+def test_openai_user_content_with_images_returns_parts_list(tmp_path):
+    path = tmp_path / "pic.png"
+    path.write_bytes(b"fake-png-bytes")
+    parts = bridge.openai_user_content("what is this?", [str(path)])
+    assert parts[0] == {"type": "text", "text": "what is this?"}
+    assert parts[1]["type"] == "image_url"
+    assert len(parts) == 2

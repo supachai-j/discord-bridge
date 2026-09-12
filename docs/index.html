@@ -227,6 +227,7 @@
       <div class="features">
         <div class="feature"><h3>Pluggable backends</h3><p>Claude Code by default; another agentic CLI or any OpenAI-compatible chat API (grok, GLM, local models) via one env var.</p></div>
         <div class="feature"><h3>Streaming replies</h3><p>The placeholder message is edited live as output arrives — not dumped all at once at the end.</p></div>
+        <div class="feature"><h3>Image attachments</h3><p>Claude/CLI backends see them by file path (their own Read tool); <code>openai_compatible</code> sees inline base64, if the model supports vision.</p></div>
         <div class="feature"><h3>Persistent conversation</h3><p>Messages in the channel are turns in one ongoing conversation, not one-shot prompts.</p></div>
         <div class="feature"><h3>Hard allowlist</h3><p>Wrong channel or wrong Discord user id, and the message never reaches the backend — everyone else gets a 🚫 reaction.</p></div>
         <div class="feature"><h3><code>!reset</code> / <code>!new</code></h3><p>Clear the conversation and start over, from Discord, without SSH.</p></div>

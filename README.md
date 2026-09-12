@@ -16,6 +16,7 @@ Discord channel --message--> bridge.py --spawn/call a backend--> claude / anothe
 
 - **Pluggable backends** — Claude Code by default; another agentic CLI (Codex, Gemini CLI) or any OpenAI-compatible chat API (grok, GLM, local models) via one env var. See [Backends](#backends).
 - **Streaming replies** — the placeholder message is edited live as output arrives, not dumped all at once at the end.
+- **Image attachments** — Claude/CLI backends see them by file path (downloaded into the backend's working directory so its own Read tool can open them); `openai_compatible` sees them as inline base64, if the model behind it supports vision.
 - **Persistent conversation** — messages in the channel are turns in one ongoing conversation, not one-shot prompts (backend-dependent — see [Backends](#backends) for what "persistent" means for a stateless chat API).
 - **Hard allowlist** — wrong channel or wrong Discord user id, and the message never reaches the backend; everyone else just gets a 🚫 reaction.
 - **`!reset` / `!new`** — clear the conversation and start over, from Discord, without SSH.
@@ -41,6 +42,10 @@ One instance uses exactly one backend, chosen with `BACKEND` (see [Configuration
 | `openai_compatible` | Any `POST {base_url}/chat/completions` endpoint — grok, GLM, a local model via Ollama/vLLM/llama.cpp, etc. | **No** — chat only | A local message-history transcript this bridge maintains, truncated to `OPENAI_COMPATIBLE_MAX_HISTORY` |
 
 `claude` requires being authenticated once, interactively, under whichever `CLAUDE_CONFIG_DIR` you point this at first (a non-interactive `-p` run has nowhere to show a login prompt). `cli` needs the chosen CLI installed and its actual current flags confirmed — the codex/Gemini CLI examples in `.env.example` are researched but **not verified end-to-end** here; check `--help` on your own install before trusting them (see [ADR-0005](docs/decisions/0005-pluggable-backends.md)). `openai_compatible` needs only an API key file and a base URL — no CLI at all, which makes it the quickest way to try a local model.
+
+### Image attachments
+
+A message with an image attached gets that image downloaded to `BRIDGE_WORKDIR/discord-attachments/` before the backend ever runs — `claude`/`cli` see it as a file path appended to the prompt (their own Read tool opens it; Claude Code and most agentic CLIs sandbox file access to their working directory tree, so this only works because the file lands *inside* `BRIDGE_WORKDIR`, not e.g. `/tmp`), `openai_compatible` sees it as an inline base64 `image_url` part (only a vision-capable model does anything with it — a text-only one just ignores that part). Downloaded images aren't cleaned up automatically; see [docs/runbook.md](docs/runbook.md) if `discord-attachments/` grows large.
 
 ## Setup
 

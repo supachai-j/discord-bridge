@@ -24,6 +24,11 @@ ps aux | grep bridge.py
 # Which backend an instance is actually running (also shown in the
 # "logged in as ..." startup log line)
 grep -E '^BACKEND=' discord-bridge/instances/<name>.env || echo claude   # unset = claude
+
+# Images sent to the bot accumulate here — nothing deletes them
+# automatically. Safe to clear any time the bot isn't mid-reply.
+du -sh ~/workspace/discord-attachments 2>/dev/null
+rm -rf ~/workspace/discord-attachments/*
 ```
 
 Single-instance (flat `discord-bridge.service` instead of the `@` template) deployments: drop `@<name>` from the unit name and use `session_id.txt` / `.env` at the repo root instead of `instances/`.
