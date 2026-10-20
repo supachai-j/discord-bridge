@@ -3,7 +3,7 @@
 # remove it thinking it's unused just because bridge.py's own imports are
 # what changed most recently.
 aiohappyeyeballs==2.7.1
-aiohttp==3.14.3
+aiohttp==3.14.4
 aiosignal==1.4.0
 attrs==26.1.0
 discord.py==2.7.1
